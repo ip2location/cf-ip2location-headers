@@ -1,0 +1,23 @@
+name = "ip2location-headers"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+# Seconds a lookup is cached at the edge. 0 = one API call per request.
+CACHE_TTL = "3600"
+
+# Trust X-Forwarded-For when CF-Connecting-IP is absent. Local development only.
+TRUST_XFF = "0"
+
+# Allow /__ip2location?ip=... to look up an arbitrary address.
+ALLOW_QUERY_IP = "0"
+
+# Access-Control-Allow-Origin for /__ip2location.
+ALLOWED_ORIGINS = "*"
+
+# The API key is a secret, not a var:
+#   wrangler secret put IP2LOCATION_API_KEY
+
+[observability]
+enabled = true

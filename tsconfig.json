@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		/* Workers supply the web-platform globals, so WebWorker describes them. */
+		"lib": ["ES2022", "WebWorker"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		/* Structural types in src/types.ts instead of @cloudflare/workers-types. */
+		"types": [],
+		"strict": true,
+		"noUncheckedIndexedAccess": false,
+		"noImplicitOverride": true,
+		"noEmit": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true
+	},
+	"include": ["src/**/*.ts"]
+}
