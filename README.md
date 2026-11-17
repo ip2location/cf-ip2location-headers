@@ -1,191 +1,285 @@
-# cf-ip2location-headers
+# IP2Location.io Headers for Cloudflare Workers
 
-A Cloudflare Worker that enrich the origin request with additional IP2Location.io geolocation records as headers.
+Enrich requests to your origin application with additional IP geolocation, network, and proxy intelligence from [IP2Location.io](https://www.ip2location.io/) using a Cloudflare Worker.
 
+Cloudflare already exposes common location and network information through `request.cf`. This Worker focuses on supplementary IP2Location.io fields, forwarding them as `X-IP2Location-*` request headers so your origin can use them without integrating the IP2Location.io API directly.
 
+## Features
 
-## Why only some fields
+- **Edge-based enrichment:** Add IP intelligence headers before forwarding requests to the origin.
+- **Complementary data:** Avoid duplicating the location and ASN fields already offered by Cloudflare.
+- **Plan-aware output:** Include fields only when the API response supplies usable values.
+- **Caching:** Cache lookups by IPv4 `/24` or IPv6 `/48` network to reduce API requests.
+- **Proxy signals:** Forward proxy type, provider, threat classification, risk score, and a combined proxy-flags header where available.
+- **Diagnostics:** Inspect lookup status using `X-IP2Location-Lookup` or the `/__ip2location` endpoint.
+- **Origin integration:** Read the enriched request headers from PHP, Node.js, Python, or another server-side framework.
 
-Cloudflare already tells the origin: `country`, `city`, `region`, `regionCode`, `continent`, `latitude`, `longitude`, `postalCode`, `metroCode`, `timezone`, `asn` and `asOrganization`.
-
-This Worker adds **only what `request.cf` does not carry**, so nothing is duplicated. Everything below comes from the Security plan.
-
-| Header | Notes |
-| --- | --- |
-| `X-IP2Location-District` | County / district |
-| `X-IP2Location-Country-Alpha3` | `USA` |
-| `X-IP2Location-Country-Currency` | `USD`, useful for localised pricing |
-| `X-IP2Location-Country-Language` | `EN` |
-| `X-IP2Location-Time-Offset` | GMT offset in seconds |
-| `X-IP2Location-Time-Abbr` | `PST` |
-| `X-IP2Location-Time-DST` | DST state |
-| `X-IP2Location-ISP` |  |
-| `X-IP2Location-Domain` | |
-| `X-IP2Location-Net-Speed` | `DIAL` `DSL` `COMP` `T1` `SAT` |
-| `X-IP2Location-Usage-Type` | `COM` `ISP` `MOB` `DCH` `SES` `AIC`, etc... |
-| `X-IP2Location-Address-Type` | `Anycast` / `Unicast` |
-| `X-IP2Location-AS-Domain` | |
-| `X-IP2Location-AS-Usage-Type` | |
-| `X-IP2Location-AS-CIDR` | AS range of the IP |
-| `X-IP2Location-Mobile-MCC` / `-MNC` / `-Brand` |  |
-| `X-IP2Location-Ads-Category` | IAB v3.1 |
-| `X-IP2Location-Is-Proxy` | |
-| `X-IP2Location-Fraud-Score` | 0-99 |
-| `X-IP2Location-Proxy-Type` | `VPN` `TOR` `DCH` `PUB` `RES` `AIC` … |
-| `X-IP2Location-Proxy-Provider` | e.g. `CyberGhost` |
-| `X-IP2Location-Threat` | `SPAM` `SCANNER` `BOTNET` `BOGON` |
-| `X-IP2Location-Proxy-Flags` | Comma-joined true flags, e.g. `vpn,ai-crawler` |
-
-
-
-Header for diagnose, always present:
-
-| Header | Values |
-| --- | --- |
-| `X-IP2Location-Lookup` | `hit` `miss` `error` `invalid` `off` |
-| `X-IP2Location-Error` | Only on failure |
-
-
-
-### Example
-
-A Security-plan key looking up `8.8.8.8`:
+## How it works
 
 ```text
-X-IP2Location-Lookup: miss
-X-IP2Location-District: Santa Clara County
-X-IP2Location-Ads-Category: Web Hosting
-X-IP2Location-Country-Alpha3: USA
-X-IP2Location-Country-Currency: USD
-X-IP2Location-Country-Language: EN
-X-IP2Location-Time-Offset: -25200
-X-IP2Location-Time-Abbr: PST
-X-IP2Location-Time-DST: true
-X-IP2Location-ISP: Google LLC
-X-IP2Location-Domain: google.com
-X-IP2Location-Net-Speed: T1
-X-IP2Location-Usage-Type: DCH
-X-IP2Location-Address-Type: Anycast
-X-IP2Location-AS-Domain: google.com
-X-IP2Location-AS-Usage-Type: DCH
-X-IP2Location-AS-CIDR: 8.8.8.0/24
-X-IP2Location-Is-Proxy: false
-X-IP2Location-Fraud-Score: 0
-X-IP2Location-Proxy-Type: DCH
-X-IP2Location-Proxy-Flags: datacenter
+Visitor
+   |
+   v
+Cloudflare Worker
+   |-- Read visitor IP (CF-Connecting-IP)
+   |-- Check network-based lookup cache
+   |-- Query IP2Location.io on a cache miss
+   |-- Remove inbound X-IP2Location-* headers
+   |-- Add trusted enrichment and diagnostic headers
+   v
+Origin application
 ```
 
-Reproduce it with `bun run live 8.8.8.8`, or `curl "http://127.0.0.1:8788/__ip2location?ip=8.8.8.8"` against `wrangler dev`.
+The Worker uses the `CF-Connecting-IP` request header to determine the visitor address. `X-Forwarded-For` can be used as a fallback only when explicitly enabled for local development.
 
+## Requirements
 
+- A Cloudflare account with access to Workers and a route or domain for your application.
+- Node.js and npm for installing project tooling.
+- [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (included as a development dependency).
+- An [IP2Location.io API key](https://www.ip2location.io/) for authenticated lookup access and additional plan-specific fields. Keyless access is also supported, subject to its limits.
+- [Bun](https://bun.sh/) if you want to run the repository's tests and live-check script.
 
-## Plan coverage
+## Quick start
 
-The API returns a different field set per plan, and the Worker only emits a header when the field is actually present. Sign up for a free API key from [https://www.ip2location.io](https://www.ip2location.io/?utm_source=cf-ip2location).
-
-| Header (`X-IP2Location-…`) | Keyless / Free | Starter | Plus | Security |
-| --- | :--: | :--: | :--: | :--: |
-| `Is-Proxy` | Yes | Yes | Yes | Yes |
-| `ISP`, `Domain`, `Net-Speed`, `Usage-Type`, `IDD-Code`, `Area-Code`, `Elevation` | No | Yes | Yes | Yes |
-| `Country-Alpha3`, `Country-Demonym`, `Country-Capital`, `Country-TLD`, `Country-Currency`, `Country-Currency-Symbol`, `Country-Language` | No | No | Yes | Yes |
-| `Time-Offset`, `Time-Abbr`, `Time-DST` | No | No | Yes | Yes |
-| `Address-Type` | No | No | Yes | Yes |
-| `Mobile-MCC`, `Mobile-MNC`, `Mobile-Brand` | No | No | Yes | Yes |
-| `District` | No | No | No | Yes |
-| `AS-Domain`, `AS-Usage-Type`, `AS-CIDR` | No | No | No | Yes |
-| `Ads-Category` | No | No | No | Yes |
-| `Fraud-Score` | No | No | No | Yes |
-| `Proxy-Type`, `Proxy-Provider`, `Threat`, `Proxy-Last-Seen`, `Proxy-Flags` | No | No | No | Yes |
-| `Is-VPN`, `Is-Tor`, `Is-Data-Center`, `Is-Public-Proxy`, `Is-Web-Proxy`, `Is-Crawler`, `Is-AI-Crawler`, `Is-Residential-Proxy`, `Is-Privacy-Network`, `Is-Enterprise-Network`, `Is-Spammer`, `Is-Scanner`, `Is-Botnet`, `Is-Bogon` | No | No | No | Yes |
-
-`Lookup` and `Error` come from the Worker, not the API, and appear on every tier.
-
-**Missing fields are omitted, not empty.** A header is set only when the field is present and not `-`. For example `Mobile-MCC` is absent for fixed-line visitors even on Security plan.
-
-
-
-## Deploy
+### 1. Clone and install
 
 ```bash
-wrangler secret put IP2LOCATION_API_KEY     # Never put it in wrangler.toml
-wrangler deploy
+git clone https://github.com/ip2location/cf-ip2location-headers.git
+cd cf-ip2location-headers
+npm install
 ```
 
-Then add a route for the zone (Workers → your Worker → Settings → Triggers → Add route), e.g. `shop.example.com/*`. Leave the `[vars]` defaults alone unless you need to change them.
+### 2. Configure the API key
 
+Authenticate with Cloudflare if you have not already:
 
+```bash
+npx wrangler login
+```
+
+Store the API key securely as a Worker secret:
+
+```bash
+npx wrangler secret put IP2LOCATION_API_KEY
+```
+
+Do not place an API key in `wrangler.toml` or commit it to the repository.
+
+### 3. Deploy
+
+```bash
+npx wrangler deploy
+```
+
+Configure a route for the Worker in your Cloudflare dashboard (for example, `shop.example.com/*`) so the Worker runs in front of your origin application. Check the Worker routing settings for your particular zone before enabling production traffic.
+
+### 4. Read the headers at your origin
+
+For example, an Express application can retrieve the ISP and lookup status:
+
+```javascript
+app.get('/', (req, res) => {
+  res.json({
+    isp: req.get('x-ip2location-isp') ?? null,
+    lookup: req.get('x-ip2location-lookup') ?? null,
+  });
+});
+```
+
+The origin receives these headers on the **incoming request**. The Worker does not automatically add them to the HTTP response returned to the visitor.
+
+## Default enrichment headers
+
+These are the enrichment headers selected by `DEFAULT_FIELDS` in [`src/fields.ts`](src/fields.ts) and used by the Worker in [`src/index.ts`](src/index.ts). The minimum-plan column follows the existing repository's plan-coverage documentation; it is not a guarantee that every IP lookup returns a value.
+
+| Header | What it represents | Minimum plan indicated by existing README* |
+| --- | --- | --- |
+| `X-IP2Location-Is-Proxy` | General proxy indicator | Keyless / Free |
+| `X-IP2Location-ISP` | Internet service provider | Starter |
+| `X-IP2Location-Domain` | Domain associated with the IP address | Starter |
+| `X-IP2Location-Net-Speed` | Network speed classification | Starter |
+| `X-IP2Location-Usage-Type` | Network usage category | Starter |
+| `X-IP2Location-Country-Alpha3` | Three-letter country code | Plus |
+| `X-IP2Location-Country-Currency` | Country currency code | Plus |
+| `X-IP2Location-Country-Language` | Country language code | Plus |
+| `X-IP2Location-Time-Offset` | GMT offset | Plus |
+| `X-IP2Location-Time-Abbr` | Time zone abbreviation | Plus |
+| `X-IP2Location-Time-DST` | Daylight saving time indicator | Plus |
+| `X-IP2Location-Address-Type` | Anycast or unicast address classification | Plus |
+| `X-IP2Location-Mobile-MCC` | Mobile country code | Plus |
+| `X-IP2Location-Mobile-MNC` | Mobile network code | Plus |
+| `X-IP2Location-Mobile-Brand` | Mobile network brand | Plus |
+| `X-IP2Location-District` | District or county | Security |
+| `X-IP2Location-AS-Domain` | Autonomous system domain | Security |
+| `X-IP2Location-AS-Usage-Type` | Autonomous system usage category | Security |
+| `X-IP2Location-AS-CIDR` | Autonomous system network range | Security |
+| `X-IP2Location-Ads-Category` | IAB advertising category name | Security |
+| `X-IP2Location-Fraud-Score` | IP fraud risk score | Security |
+| `X-IP2Location-Proxy-Type` | Proxy type classification | Security |
+| `X-IP2Location-Proxy-Provider` | Proxy provider name | Security |
+| `X-IP2Location-Threat` | Threat categories associated with the IP | Security |
+| `X-IP2Location-Proxy-Flags` | Comma-separated active proxy-related indicators | Security |
+
+*Minimum plans are based on the original README's coverage matrix. Confirm current subscription entitlements and response fields with [IP2Location.io](https://www.ip2location.io/). The Worker omits unavailable, blank, or `-`-valued fields. Even with a Security plan, not every header will appear for every IP.*
+
+### Diagnostic headers
+
+| Header | What it represents | Availability |
+| --- | --- | --- |
+| `X-IP2Location-Lookup` | Lookup status: `hit`, `miss`, `error`, `invalid`, or `off` | Worker-generated on forwarded requests |
+| `X-IP2Location-Error` | Error message, if lookup fails | Worker-generated only on failure |
+
+Lookup states:
+
+- `hit`: data was retrieved from the cache.
+- `miss`: the API supplied data and caching was enabled, but no matching cached result existed.
+- `off`: the API supplied data without caching.
+- `error`: the API lookup or Worker failed.
+- `invalid`: the client address was missing or was not a valid IP address.
+
+### Additional fields defined in the source (not emitted by default)
+
+The field registry in [`src/fields.ts`](src/fields.ts) defines additional headers, but **the Worker emits only the names enabled in `DEFAULT_FIELDS`**. These additional fields are not part of the default enrichment table:
+
+| Group | Additional headers available in the field registry |
+| --- | --- |
+| Network and country | `X-IP2Location-Elevation`, `X-IP2Location-IDD-Code`, `X-IP2Location-Area-Code`, `X-IP2Location-Country-Demonym`, `X-IP2Location-Country-Capital`, `X-IP2Location-Country-TLD`, `X-IP2Location-Country-Currency-Symbol` |
+| Proxy history | `X-IP2Location-Proxy-Last-Seen` |
+| Individual proxy indicators | `X-IP2Location-Is-VPN`, `X-IP2Location-Is-Tor`, `X-IP2Location-Is-Data-Center`, `X-IP2Location-Is-Public-Proxy`, `X-IP2Location-Is-Web-Proxy`, `X-IP2Location-Is-Crawler`, `X-IP2Location-Is-AI-Crawler`, `X-IP2Location-Is-Residential-Proxy`, `X-IP2Location-Is-Privacy-Network`, `X-IP2Location-Is-Enterprise-Network`, `X-IP2Location-Is-Spammer`, `X-IP2Location-Is-Scanner`, `X-IP2Location-Is-Botnet`, `X-IP2Location-Is-Bogon` |
+
+To emit one of these headers, edit `DEFAULT_FIELDS` in `src/fields.ts` to include its corresponding `key` from `FIELDS`, then redeploy. Plan entitlements and available API values still apply. By default, proxy booleans are instead represented collectively in `X-IP2Location-Proxy-Flags` (for example, `vpn,datacenter`). The combined flags header is absent if there are no `true` flags.
 
 ## Configuration
 
-| Var | Default | Meaning |
+The repository provides defaults in [`wrangler.toml`](wrangler.toml):
+
+| Variable | Default | Description |
 | --- | --- | --- |
-| `CACHE_TTL` | `3600` | Seconds a lookup stays cached. `0` = one API call per request |
-| `ALLOW_QUERY_IP` | `0` | Allow `?ip=` on the debug endpoint |
-| `TRUST_XFF` | `0` | Let X-Forwarded-For stand in for `CF-Connecting-IP`. Local dev only |
-| `ALLOWED_ORIGINS` | `*` | CORS origin for the debug endpoint |
+| `CACHE_TTL` | `3600` | Cache lifetime in seconds. Set to `0` to disable lookup caching. |
+| `ALLOW_QUERY_IP` | `0` | Allow the diagnostic endpoint to accept an IP override using `?ip=`. |
+| `TRUST_XFF` | `0` | Use `X-Forwarded-For` when `CF-Connecting-IP` is absent. Intended for local development only. |
+| `ALLOWED_ORIGINS` | `*` | `Access-Control-Allow-Origin` value for the diagnostic endpoint. |
+| `IP2LOCATION_API_KEY` | Secret (optional) | IP2Location.io API key, stored as a Cloudflare Worker secret. |
 
+Values such as `1`, `true`, `yes`, and `on` enable the boolean options.
 
+### Caching and API usage
 
-## Disclamation
+The Worker uses a network-based cache key rather than caching each individual address:
 
-Free plan is 50,000 queries/month; keyless is 1,000/day. Lookups are cached **by network, not by address**: every visitor in a /24 or /48 shares one entry, so a busy shop makes roughly one call per network per hour. 
+- IPv4: `/24` network.
+- IPv6: `/48` network.
+- Default cache duration: one hour (`CACHE_TTL=3600`).
 
-If the key is rejected or the quota runs out (error 10000) the Worker automatically retries once **without** the key.
+This reduces API traffic but means lookups for different addresses in the same network can reuse the same enrichment data. If precise per-address distinctions are important, assess the trade-off before using network-based caching.
 
+If the API returns error code `10000` for an authenticated request, the Worker retries once without the key. The keyless fallback may supply fewer fields and is subject to its own rate limits. The source does not implement a generic retry for every HTTP or network failure.
 
+## Developer integration examples
 
-## Access the Headers in Web Applications
+The following examples run **at your origin server**, after the Cloudflare Worker forwards the enriched request.
 
-#### PHP
+### PHP
 
 ```php
-$isp     = $_SERVER['HTTP_X_IP2LOCATION_ISP'] ?? null;
-$flags   = $_SERVER['HTTP_X_IP2LOCATION_PROXY_FLAGS'] ?? '';
-$isProxy = $_SERVER['HTTP_X_IP2LOCATION_IS_PROXY'] === 'true';
-$isVpn   = str_contains($flags, 'vpn');
+<?php
+$isp = $_SERVER['HTTP_X_IP2LOCATION_ISP'] ?? null;
+$lookup = $_SERVER['HTTP_X_IP2LOCATION_LOOKUP'] ?? null;
+$flags = array_filter(explode(',', $_SERVER['HTTP_X_IP2LOCATION_PROXY_FLAGS'] ?? ''));
+$isVpn = in_array('vpn', $flags, true);
+$isProxy = ($_SERVER['HTTP_X_IP2LOCATION_IS_PROXY'] ?? '') === 'true';
 ```
 
+### Node.js (Express)
 
-
-#### Node.js
-
-```js
-const isp     = req.get('x-ip2location-isp');
-const flags   = req.get('x-ip2location-proxy-flags') ?? '';
+```javascript
+const isp = req.get('x-ip2location-isp') ?? null;
+const lookup = req.get('x-ip2location-lookup') ?? null;
+const flags = (req.get('x-ip2location-proxy-flags') ?? '').split(',');
+const isVpn = flags.includes('vpn');
 const isProxy = req.get('x-ip2location-is-proxy') === 'true';
-const isVpn   = flags.split(',').includes('vpn');
 ```
 
-
-
-#### Python
+### Python (Flask)
 
 ```python
-isp      = request.headers.get('X-IP2Location-ISP')
-flags    = request.headers.get('X-IP2Location-Proxy-Flags', '')
+from flask import request
+
+isp = request.headers.get('X-IP2Location-ISP')
+lookup = request.headers.get('X-IP2Location-Lookup')
+flags = request.headers.get('X-IP2Location-Proxy-Flags', '').split(',')
+is_vpn = 'vpn' in flags
 is_proxy = request.headers.get('X-IP2Location-Is-Proxy') == 'true'
-is_vpn   = 'vpn' in flags.split(',')
 ```
 
+Missing headers should be treated as **unknown or unavailable**, not automatically as negative classifications.
 
+## Local development
 
-## Debug Endpoint
-
-`GET /__ip2location` returns the caller's lookup: the headers that would be sent, plus the raw payload. `?ip=` only works when `ALLOW_QUERY_IP=1`, so the endpoint cannot be used to burn quota.
-
-```bash
-curl "http://127.0.0.1:8788/__ip2location?ip=8.8.8.8"
-```
-
-
-
-## Local Development
+1. Copy `.dev.vars.example` to `.dev.vars` and insert your API key.
+2. Install project dependencies.
+3. Start the local Worker.
 
 ```bash
-cp .dev.vars.example .dev.vars     # Insert your API key
+cp .dev.vars.example .dev.vars
 npm install
-bun test
-bun x tsc --noEmit
-bun run live
-wrangler dev
+npm run dev
 ```
+
+The example file enables `TRUST_XFF=1` and `ALLOW_QUERY_IP=1` for local testing. Do not carry those settings into production without assessing their security implications.
+
+Run validation using the scripts included with the repository:
+
+```bash
+npm run typecheck
+bun test
+bun run live 8.8.8.8
+```
+
+The live-check command contacts the IP2Location.io API and may consume lookup quota.
+
+## Debugging
+
+The Worker reserves `GET /__ip2location` to return diagnostic JSON with the client IP, lookup state, network cache key, emitted enrichment headers, and API response data.
+
+When running the local Worker and `ALLOW_QUERY_IP=1`:
+
+```bash
+curl "http://127.0.0.1:8787/__ip2location?ip=8.8.8.8"
+```
+
+Check the actual local port printed by Wrangler; it can vary. If `ALLOW_QUERY_IP=0`, `?ip=` is ignored. **The endpoint itself remains accessible** unless you add access controls.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| No enrichment headers at the origin | Confirm the Worker is deployed, its route matches the request, and the origin is reached through Cloudflare. |
+| `X-IP2Location-Lookup: invalid` | Verify the visitor IP is present in `CF-Connecting-IP`. `TRUST_XFF` is intended only for controlled local tests. |
+| `X-IP2Location-Lookup: error` | Inspect `X-IP2Location-Error`, API credentials, lookup quota, and outbound API access. |
+| Some fields are missing | Check the API plan, the actual response value, and whether the field is included in `DEFAULT_FIELDS`. |
+| `X-IP2Location-Is-Bogon` is absent | It is registered in `FIELDS` but not selected by default; inspect `X-IP2Location-Proxy-Flags` or explicitly enable it. |
+| Different IPs return similar data | Network-based caching shares responses within IPv4 `/24` and IPv6 `/48` networks. |
+| `?ip=` does not change the debug lookup | Set `ALLOW_QUERY_IP=1` only in a controlled development environment. |
+
+## Security and responsible use
+
+- **Trust boundary:** The Worker removes incoming `X-IP2Location-*` request headers before setting its own values. Protect direct origin access so untrusted clients cannot bypass Cloudflare and submit forged headers.
+- **Secrets:** Keep `IP2LOCATION_API_KEY` in Worker secrets or local `.dev.vars`, never in committed configuration or client-side code.
+- **Debug endpoint:** `/__ip2location` can expose lookup data. `ALLOW_QUERY_IP=0` prevents arbitrary IP selection but does not disable the endpoint. Protect it separately if necessary.
+- **CORS:** Restrict `ALLOWED_ORIGINS` when cross-origin diagnostic access is unnecessary.
+- **Interpretation:** IP geolocation is approximate, not GPS. Proxy indicators and fraud scores are signals, not definitive proof of malicious activity; use other evidence before taking consequential action.
+
+## Resources
+
+- [IP2Location.io](https://www.ip2location.io/)
+- [IP2Location.io API documentation](https://www.ip2location.io/ip2location-documentation)
+- [Cloudflare Workers documentation](https://developers.cloudflare.com/workers/)
+- [Wrangler documentation](https://developers.cloudflare.com/workers/wrangler/)
+- [Issues and feature requests](https://github.com/ip2location/cf-ip2location-headers/issues)
+
+## Contributing
+
+Contributions and bug reports are welcome. Open an issue to discuss a change, or submit a pull request with a clear description and relevant tests.
+
